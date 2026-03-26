@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import settings
-from src.api.routes import auth
+from src.api.routes import auth, profile
 
-# TODO: 引入其他模块的路由 (Profile, Agent, Feed, Social)
+# TODO: 引入其他模块的路由 (Agent, Feed, Social)
 
 def get_application() -> FastAPI:
     application = FastAPI(
@@ -26,6 +26,13 @@ def get_application() -> FastAPI:
         auth.router, 
         prefix=f"{settings.API_V1_STR}/auth", 
         tags=["1. 通行证与账号 (Auth)"]
+    )
+    
+    # [新增] 注册 Profile 画像路由
+    application.include_router(
+        profile.router,
+        prefix=f"{settings.API_V1_STR}/profiles",
+        tags=["2. 用户画像与同步 (Profile)"]
     )
     
     # 健康检查
