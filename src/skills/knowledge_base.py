@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from src.core.skills.registry import agent_skills
+# 将 from src.core.skills.registry import agent_skills
+from src.skills.registry import agent_skills
 from src.models.agent import GameKnowledgeBase
 from src.core.ai_engine import create_embedding
 

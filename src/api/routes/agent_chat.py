@@ -15,9 +15,8 @@ from src.core.ai_engine import (
     save_conversation_to_memory, extract_and_store_memory
 )
 
-from src.core.skills.registry import agent_skills
-# 确保导入，触发 @agent_skills.register 装饰器的绑定
-import src.core.skills.knowledge_base 
+from src.skills.registry import agent_skills
+import src.skills.knowledge_base
 
 router = APIRouter()
 

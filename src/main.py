@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import settings
-from src.api.routes import auth, profile, agent
-from src.api.routes import agent_chat # <-- [新增]
+from src.api.routes import auth, profile, agent, agent_chat, forum, social, feed
+
 
 def get_application() -> FastAPI:
     application = FastAPI(
@@ -30,9 +30,28 @@ def get_application() -> FastAPI:
         tags=["4. AI 对话引擎 (Agent Chat)"]
     )
     
+    application.include_router(
+        forum.router,
+        prefix=f"{settings.API_V1_STR}/forum",
+        tags=["5. 社区广场 (Forum)"]
+    )
+
+    application.include_router(
+        social.router,
+        prefix=f"{settings.API_V1_STR}",
+        tags=["6. 社交与私信 (Social & DM)"]
+    )
+
+    application.include_router(
+        feed.router,
+        prefix=f"{settings.API_V1_STR}",
+        tags=["7. 发现与推荐 (Feed & Recommendation)"]
+    )
+
     @application.get("/health", tags=["System"])
     async def health_check():
         return {"status": "ok", "message": "TX_ku backend is running."}
+
 
     return application
 
