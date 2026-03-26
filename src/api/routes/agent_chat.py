@@ -7,40 +7,19 @@ from sqlalchemy import select
 from src.core.database import get_db, AsyncSessionLocal
 from src.api.dependencies import get_current_user
 from src.models.user import User, Profile
-from src.models.agent import AgentTuning
+from src.models.agent import AgentTuning, UserMemoryInsight
 from src.schemas.agent_chat import ChatRequest
 from src.core.ai_engine import (
     client, build_system_prompt, retrieve_long_term_memory, 
-    get_short_term_memory, compress_context, create_embedding, save_conversation_to_memory
+    get_short_term_memory, compress_context, create_embedding, 
+    save_conversation_to_memory, extract_and_store_memory
 )
 
+from src.core.skills.registry import agent_skills
+# 确保导入，触发 @agent_skills.register 装饰器的绑定
+import src.core.skills.knowledge_base 
+
 router = APIRouter()
-
-# --- 模拟定义的 Tools (MCP 协议扩展点) ---
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_forum_posts",
-            "description": "当用户询问关于游戏攻略、上分技巧或广场帖子时调用，以获取社区最新动态",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keyword": {"type": "string", "description": "搜索关键词，如 'APEX 上分'"}
-                },
-                "required": ["keyword"]
-            }
-        }
-    }
-]
-
-async def execute_tool(tool_name: str, arguments: dict) -> str:
-    """执行本地工具或请求外部微服务 (Tool Execution)"""
-    if tool_name == "search_forum_posts":
-        keyword = arguments.get("keyword", "")
-        # TODO: 实际应查询 posts 表或 Elasticsearch
-        return f"【系统检索结果】社区关于 '{keyword}' 的最新热帖：1. '今天APEX连败怎么调整心态' 2. '双排上分最优阵容推荐'。"
-    return "工具未找到或执行失败。"
 
 @router.post("/chat")
 async def chat_with_agent(
@@ -49,38 +28,49 @@ async def chat_with_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """AI 智能体核心对话流 (支持 SSE, RAG, Tool Loop)"""
+    """AI 智能体核心对话流 (支持 SSE, RAG, 动态 Skill Loop)"""
     
-    # 1. 获取用户配置
+    # 1. 提取动态总结的高价值潜意识记忆 (Insight RAG)
+    current_msg_vector = await create_embedding(request.message)
+    insight_stmt = (
+        select(UserMemoryInsight)
+        .where(UserMemoryInsight.user_id == current_user.id)
+        .order_by(UserMemoryInsight.embedding.cosine_distance(current_msg_vector))
+        .limit(3)
+    )
+    memory_results = (await db.execute(insight_stmt)).scalars().all()
+    memory_insights = [m.insight_text for m in memory_results]
+    
+    # 2. 组装人设与 System Prompt
     profile = (await db.execute(select(Profile).where(Profile.user_id == current_user.id))).scalars().first()
     tuning = (await db.execute(select(AgentTuning).where(AgentTuning.user_id == current_user.id))).scalars().first()
+    system_prompt = build_system_prompt(profile, tuning, memory_insights)
     
-    system_prompt = build_system_prompt(profile, tuning)
-    
-    # 2. 生成当前输入的 Vector 并进行 RAG 记忆检索
-    current_msg_vector = await create_embedding(request.message)
+    # 3. 原始长期对话切片召回 (保持原逻辑辅助上下文)
     long_term_memories = await retrieve_long_term_memory(db, current_user.id, current_msg_vector)
-    
     if long_term_memories:
         memory_context = "\n".join(long_term_memories)
-        system_prompt += f"\n\n【潜意识回忆】你隐约记得过去和用户的这些对话片段，适当时可作为背景参考：\n{memory_context}"
+        system_prompt += f"\n【原始对话片段回忆】：\n{memory_context}"
 
-    # 3. 组装短期上下文并执行 Token 滑动窗口压缩
+    # 4. 短期滑动窗口加载与截断限制压缩
     recent_history = await get_short_term_memory(db, current_user.id, limit=6)
-    
     raw_messages = [{"role": "system", "content": system_prompt}] + recent_history + [{"role": "user", "content": request.message}]
     messages = compress_context(raw_messages, max_tokens=8000)
 
-    # 4. SSE 异步生成器与 Tool Loop
+    # 获取注册表中的可用技能 Schema
+    tools_schema = agent_skills.get_tools_schema()
+    tools_payload = tools_schema if tools_schema else None
+
+    # 5. SSE 异步生成器与 Skill 调用循环 (Agentic Loop)
     async def event_generator():
         nonlocal messages
         full_ai_response = ""
         
-        while True: # Tool Loop
+        while True: # Agent 工作流引擎循环
             stream = await client.chat.completions.create(
                 model="gpt-4o-mini", # 或 deepseek-chat
                 messages=messages,
-                tools=TOOLS,
+                tools=tools_payload,
                 stream=True
             )
             
@@ -90,9 +80,11 @@ async def chat_with_agent(
             tool_call_id = ""
 
             async for chunk in stream:
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta
                 
-                # A. 遇到工具调用
+                # A. 模型决定调用工具
                 if delta.tool_calls:
                     is_tool_call = True
                     tc = delta.tool_calls[0]
@@ -101,47 +93,51 @@ async def chat_with_agent(
                     if tc.function.arguments: tool_call_args += tc.function.arguments
                     continue
                 
-                # B. 正常的流式文本输出
+                # B. 流式输出正常文本
                 if delta.content:
                     text_chunk = delta.content
                     full_ai_response += text_chunk
                     yield f"data: {json.dumps({'content': text_chunk, 'done': False}, ensure_ascii=False)}\n\n"
 
-            # 如果模型决定调用工具，则静默执行，中断推流并重入 Loop
+            # 执行 Skill 技能拦截
             if is_tool_call:
-                # 提示前端当前 AI 正在思考/使用工具
-                yield f"data: {json.dumps({'tool_call': f'正在使用工具: {tool_call_name}...', 'done': False}, ensure_ascii=False)}\n\n"
+                # 给前端发送状态打点
+                yield f"data: {json.dumps({'tool_call': f'正在检索信息...', 'done': False}, ensure_ascii=False)}\n\n"
                 
-                # 记录模型意图
                 messages.append({
                     "role": "assistant",
                     "content": None,
                     "tool_calls": [{"id": tool_call_id, "type": "function", "function": {"name": tool_call_name, "arguments": tool_call_args}}]
                 })
                 
-                # 执行本地逻辑
-                args_dict = json.loads(tool_call_args)
-                tool_result = await execute_tool(tool_call_name, args_dict)
+                # 动态透传 DB Session 和当前用户给对应的 Skill
+                tool_result = await agent_skills.execute_skill(
+                    name=tool_call_name, 
+                    args_json=tool_call_args,
+                    db=db,
+                    current_user=current_user
+                )
                 
-                # 将工具执行结果喂回给模型
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "name": tool_call_name,
                     "content": tool_result
                 })
-                continue # 重入 Tool Loop，重新请求大模型
+                continue 
             
-            break # 无工具调用，文本生成完毕，退出 Loop
+            break # 回复完成，跳出工作流
 
         yield f"data: {json.dumps({'done': True})}\n\n"
         
-        # 5. 生成完毕，触发异步落库与向量化任务 (注意：必须使用新的 DB Session 防止原有请求上下文关闭)
-        async def background_memory_job():
+        # 6. 生成完毕，触发异步落库与 AI 长期记忆总结任务
+        async def background_memory_jobs():
             async with AsyncSessionLocal() as bg_db:
+                # a. 保存原始切片以供下次滑动窗口使用
                 await save_conversation_to_memory(bg_db, current_user.id, request.message, full_ai_response)
+                # b. 高价值事实提炼：剥离噪音，提纯特征入库
+                await extract_and_store_memory(bg_db, current_user.id, request.message, full_ai_response)
                 
-        background_tasks.add_task(background_memory_job)
+        background_tasks.add_task(background_memory_jobs)
 
-    # 返回 Server-Sent Events 响应
     return StreamingResponse(event_generator(), media_type="text/event-stream")
