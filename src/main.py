@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import settings
-from src.api.routes import auth, profile, agent, agent_chat, forum, social, feed
+from src.api.routes import auth, ai_tools, upload, profile, agent, agent_chat, forum, social, feed
 
 
 def get_application() -> FastAPI:
@@ -46,6 +46,18 @@ def get_application() -> FastAPI:
         feed.router,
         prefix=f"{settings.API_V1_STR}",
         tags=["7. 发现与推荐 (Feed & Recommendation)"]
+    )
+
+    application.include_router(
+        ai_tools.router,
+        prefix=f"{settings.API_V1_STR}/ai/tools",
+        tags=["8. AI 工具引擎 (AI Tools)"]
+    )
+
+    application.include_router(
+        upload.router,
+        prefix=f"{settings.API_V1_STR}/uploads",
+        tags=["9. 媒体与存储 (Uploads & Media)"]
     )
 
     @application.get("/health", tags=["System"])

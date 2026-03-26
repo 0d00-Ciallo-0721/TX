@@ -1,12 +1,14 @@
 import json
-from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 import redis.asyncio as redis
 
 from src.core.config import settings
 from src.core.database import get_db
 from src.api.dependencies import get_current_user
 from src.models.user import User
+from src.models.social import BuddyRequest  # 新增导入
 from src.schemas.feed import BuddyRequestCreate
 from src.services.recommendation_service import compute_and_cache_recommendations
 
@@ -65,6 +67,30 @@ async def send_buddy_request(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """发送搭子申请 (满足 Android 端的遗留 TODO)"""
-    # 这里为了简便直接返回成功，生产环境需落库到 buddy_requests 表并通知目标用户
+    """[更新] 发送搭子申请 (真实校验防重与落库)"""
+    if current_user.id == request.target_user_id:
+        raise HTTPException(status_code=400, detail="不能向自己发送搭子申请")
+
+    # 1. 检查是否已经存在未处理的申请，防止疯狂点击刷库
+    existing_req = await db.execute(
+        select(BuddyRequest).where(
+            BuddyRequest.sender_id == current_user.id,
+            BuddyRequest.receiver_id == request.target_user_id,
+            BuddyRequest.status == 'PENDING'
+        )
+    )
+    if existing_req.scalars().first():
+        return {"code": 400, "message": "您已发送过申请，请等待对方处理"}
+        
+    # 2. 真实落库
+    new_request = BuddyRequest(
+        sender_id=current_user.id,
+        receiver_id=request.target_user_id,
+        message=request.message
+    )
+    db.add(new_request)
+    await db.commit()
+    
+    # TODO: 后续可在此处增加向接收方的 WebSocket 推送通知功能
+    
     return {"code": 200, "message": "申请已发送", "data": {"success": True}}

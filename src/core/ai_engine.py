@@ -1,3 +1,4 @@
+import json
 import tiktoken
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ client = AsyncOpenAI(
     api_key=getattr(settings, "OPENAI_API_KEY", "your-api-key"),
     base_url=getattr(settings, "OPENAI_BASE_URL", "https://api.openai.com/v1")
 )
+
 
 tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -141,3 +143,83 @@ async def extract_and_store_memory(db: AsyncSession, user_id: str, user_msg: str
             await db.commit()
     except Exception as e:
         print(f"Memory extraction failed: {e}")
+
+
+async def generate_buddy_card(profile: Profile) -> dict:
+    """根据用户画像生成极具吸引力的搭子名片 (强制输出 JSON)"""
+    prompt = f"""
+    你是一个专业的高级游戏社交人设分析师。请根据以下用户真实的建档画像，生成极具吸引力的“搭子名片”。
+    
+    【用户真实数据】
+    - 昵称: {profile.nickname}
+    - 签名: {profile.bio}
+    - 常玩游戏: {profile.preferred_games}
+    - 段位/水平: {profile.rank}
+    - 活跃时段: {profile.active_time}
+    - 游戏风格: {profile.play_style}
+    - 雷区(忌讳): {profile.no_gos}
+    
+    请严格输出为 JSON 格式，必须包含以下字段：
+    - "tags": 字符串数组，提炼3-5个个性与战术标签 (如 "稳中求胜", "晚间活跃", "护阵软辅")
+    - "declaration": 字符串，一句破冰且吸睛的交友宣言
+    - "rules": 字符串数组，2-3条明确的组队原则或底线
+    - "pro_persona_label": 字符串，一句话抽象其玩家气质 (如 "冷静型战术大脑")
+    """
+    
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.7
+    )
+    return json.loads(response.choices[0].message.content)
+
+async def generate_post_draft(intent: str, profile: Profile) -> dict:
+    """根据简单意图，扩写为高质量的广场帖子"""
+    prompt = f"""
+    你是一位资深的电竞社区运营专家。用户想要在游戏社区发帖，请根据其极简的【发帖意图】和【个人画像】，帮他扩写一份高质量的帖子草稿。
+    
+    用户昵称：{profile.nickname if profile else '玩家'}
+    常玩游戏：{profile.preferred_games if profile else '未知'}
+    发帖意图："{intent}"
+    
+    要求：文案口语化、真诚、适当带一点游戏圈的热梗，排版要清晰（可用emoji）。
+    严格输出为 JSON 格式，包含：
+    - "title": 吸引人的标题
+    - "content": 帖子正文
+    - "tags": 字符串数组，推荐3个标签 (不需要带#号)
+    """
+    
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.8
+    )
+    return json.loads(response.choices[0].message.content)
+
+async def generate_consensus_card(user_profile: Profile, target_profile: Profile) -> dict:
+    """对比两份 Profile，生成社交共识卡 (匹配度与破冰建议)"""
+    prompt = f"""
+    你是同频搭 APP 的顶级 AI 红娘/游戏社交指导。现在需要评估两位玩家的契合度。
+    
+    【玩家 A (发起方)】: 
+    常玩:{user_profile.preferred_games}, 时段:{user_profile.active_time}, 风格:{user_profile.play_style}, 雷区:{user_profile.no_gos}
+    
+    【玩家 B (目标搭子)】: 
+    常玩:{target_profile.preferred_games}, 时段:{target_profile.active_time}, 风格:{target_profile.play_style}, 雷区:{target_profile.no_gos}
+    
+    请严格输出 JSON 格式，包含：
+    - "match_score": 整数，根据时段、风格、雷区推算的默契度得分 (0-100)
+    - "match_reasons": 字符串数组，2-3条契合点 (如 "周末时段完美重合")
+    - "advice": 字符串，相处建议与防踩雷提示
+    - "icebreaker_suggestion": 字符串，为 A 量身定制的，向 B 打招呼的第一句话
+    """
+    
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.5
+    )
+    return json.loads(response.choices[0].message.content)        
