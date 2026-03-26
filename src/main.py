@@ -23,16 +23,17 @@ def get_application() -> FastAPI:
     application.include_router(profile.router, prefix=f"{settings.API_V1_STR}/profiles", tags=["2. 用户画像与同步 (Profile)"])
     application.include_router(agent.router, prefix=f"{settings.API_V1_STR}/agent", tags=["3. 智能体配置 (Agent Config)"])
     
-    # [新增] 注册智能体对话流路由
+    # 注册智能体对话流路由
     application.include_router(
         agent_chat.router,
         prefix=f"{settings.API_V1_STR}/ai/agent",
         tags=["4. AI 对话引擎 (Agent Chat)"]
     )
     
+    # [修复完成] 移除 /forum 冗余前缀，对齐契约文档 /api/v1/posts
     application.include_router(
         forum.router,
-        prefix=f"{settings.API_V1_STR}/forum",
+        prefix=f"{settings.API_V1_STR}", 
         tags=["5. 社区广场 (Forum)"]
     )
 
@@ -63,7 +64,6 @@ def get_application() -> FastAPI:
     @application.get("/health", tags=["System"])
     async def health_check():
         return {"status": "ok", "message": "TX_ku backend is running."}
-
 
     return application
 
