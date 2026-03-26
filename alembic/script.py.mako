@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+import pgvector.sqlalchemy  # [新增] 强制每次迁移都导入 pgvector，解决报错
 ${imports if imports else ""}
 
 # revision identifiers, used by Alembic.

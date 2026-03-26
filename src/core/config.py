@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # Database Settings
-    # 默认连接本地 PostgreSQL，实际生产环境需通过环境变量覆盖
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:a52651794password@127.0.0.1:5432/tx_ku"
+    # 已修正密码为 a52651794，并添加了 ssl=disable 以增强 Windows 环境下的稳定性
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:a52651794@127.0.0.1:5432/tx_ku?ssl=disable"
     
     # Security
     SECRET_KEY: str = "a52651794"
